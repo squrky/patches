@@ -1,0 +1,130 @@
+=== modified file 'src/state.c'
+--- src/state.c	2021-08-14 22:35:28 +0000
++++ src/state.c	2021-08-29 16:49:06 +0000
+@@ -82,9 +82,15 @@
+ 
+   state->bold_is_highbright = 0;
+ 
++  state->decode_chars_size = 0;
++  state->decode_chars = NULL;
++
+   state->combine_chars_size = 16;
+   state->combine_chars = vterm_allocator_malloc(state->vt, state->combine_chars_size * sizeof(state->combine_chars[0]));
+ 
++  state->combine_output_chars_size = 0;
++  state->combine_output_chars = NULL;
++
+   state->tabstops = vterm_allocator_malloc(state->vt, (state->cols + 7) / 8);
+ 
+   state->lineinfos[BUFIDX_PRIMARY]   = vterm_allocator_malloc(state->vt, state->rows * sizeof(VTermLineInfo));
+@@ -105,7 +111,11 @@
+   vterm_allocator_free(state->vt, state->lineinfos[BUFIDX_PRIMARY]);
+   if(state->lineinfos[BUFIDX_ALTSCREEN])
+     vterm_allocator_free(state->vt, state->lineinfos[BUFIDX_ALTSCREEN]);
++  if(state->combine_output_chars)
++    vterm_allocator_free(state->vt, state->combine_output_chars);
+   vterm_allocator_free(state->vt, state->combine_chars);
++  if(state->decode_chars)
++    vterm_allocator_free(state->vt, state->decode_chars);
+   vterm_allocator_free(state->vt, state);
+ }
+ 
+@@ -171,6 +181,24 @@
+     state->pos.row++;
+ }
+ 
++static uint32_t* resize_decode_buffer(VTermState *state, size_t minimum_size)
++{
++  if(state->decode_chars_size >= minimum_size)
++    return state->decode_chars;
++
++  if(state->decode_chars)
++    vterm_allocator_free(state->vt, state->decode_chars);
++
++  size_t new_size = state->decode_chars_size == 0 ? 1 : state->decode_chars_size;
++  while(new_size < minimum_size)
++    new_size *= 2;
++  
++  uint32_t *new_chars = vterm_allocator_malloc(state->vt, new_size * sizeof(new_chars[0]));
++  state->decode_chars = new_chars;
++  state->decode_chars_size = new_size;
++  return state->decode_chars;
++}
++
+ static void grow_combine_buffer(VTermState *state)
+ {
+   size_t    new_size = state->combine_chars_size * 2;
+@@ -184,6 +212,24 @@
+   state->combine_chars_size = new_size;
+ }
+ 
++static uint32_t* resize_combine_output_buffer(VTermState *state, size_t minimum_size)
++{
++  if(state->combine_output_chars_size >= minimum_size)
++    return state->combine_output_chars;
++
++  if(state->combine_output_chars)
++    vterm_allocator_free(state->vt, state->combine_output_chars);
++
++  size_t new_size = state->combine_output_chars_size == 0 ? 1 : state->combine_output_chars_size;
++  while(new_size < minimum_size)
++    new_size *= 2;
++  
++  uint32_t *new_chars = vterm_allocator_malloc(state->vt, new_size * sizeof(new_chars[0]));
++  state->combine_output_chars = new_chars;
++  state->combine_output_chars_size = new_size;
++    return state->combine_output_chars;
++}
++
+ static void set_col_tabstop(VTermState *state, int col)
+ {
+   unsigned char mask = 1 << (col & 7);
+@@ -275,8 +321,9 @@
+ 
+   VTermPos oldpos = state->pos;
+ 
+-  // We'll have at most len codepoints
+-  uint32_t codepoints[len];
++  /* Size up decode buffer */
++  uint32_t* codepoints = resize_decode_buffer(state, len);
++  
+   int npoints = 0;
+   size_t eaten = 0;
+ 
+@@ -353,7 +400,9 @@
+ 
+     int width = 0;
+ 
+-    uint32_t chars[glyph_ends - glyph_starts + 1];
++    /* Size up decode buffer */
++    int chars_len = glyph_ends - glyph_starts + 1;
++    uint32_t* chars = resize_combine_output_buffer(state, chars_len);
+ 
+     for( ; i < glyph_ends; i++) {
+       chars[i - glyph_starts] = codepoints[i];
+
+=== modified file 'src/vterm_internal.h'
+--- src/vterm_internal.h	2021-05-11 19:02:29 +0000
++++ src/vterm_internal.h	2021-08-29 16:38:57 +0000
+@@ -97,12 +97,20 @@
+ 
+   enum { MOUSE_X10, MOUSE_UTF8, MOUSE_SGR, MOUSE_RXVT } mouse_protocol;
+ 
++  /* Buffer for decoding input text */
++  uint32_t *decode_chars;
++  size_t decode_chars_size; // Number of ELEMENTS in the above
++
+   /* Last glyph output, for Unicode recombining purposes */
+   uint32_t *combine_chars;
+   size_t combine_chars_size; // Number of ELEMENTS in the above
+   int combine_width; // The width of the glyph above
+   VTermPos combine_pos;   // Position before movement
+ 
++  /* Buffer for holding slice of combined chars for output */
++  uint32_t *combine_output_chars;
++  size_t combine_output_chars_size; // Number of ELEMENTS in the above
++
+   struct {
+     unsigned int keypad:1;
+     unsigned int cursor:1;
+
